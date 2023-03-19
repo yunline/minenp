@@ -6,7 +6,7 @@ from pygame.locals import *
 np.set_printoptions(precision=2, suppress=True)
 
 size=np.array((640,480))
-rate=16
+rate=10
 
 font_path='fusion-pixel-font-monospaced-otf-v2023.02.13/fusion-pixel-monospaced.otf'
 
@@ -265,20 +265,22 @@ class Renderer:
         return (len(_list)//100+1)*100
 
     def init_triangles_array(self):
-        if len(self.triangles_array)<len(self.triangles):
+        if len(self.triangles_array)<len(self.triangles) or\
+            len(self.triangles_array)>len(self.triangles)+200:
             self.triangles_array=np.zeros(
                 (self.get_array_len(self.triangles)
                 ,3,3),dtype=np.float64)
             self.triangles_array[:,1]=[2,0,0]
             self.triangles_array[:,2]=[0,2,0]
-    
-    def init_triangle_uv_array(self):
-        if len(self.triangle_uv_array)<len(self.triangle_uv):
+
             self.triangle_uv_array=np.zeros(
                 (self.get_array_len(self.triangle_uv),
                 3,2),dtype=np.float64)
             self.triangle_uv_array[:,1]=[2,0]
             self.triangle_uv_array[:,2]=[0,2]
+
+        self.triangles_array[:len(self.triangles)]=self.triangles
+        self.triangle_uv_array[:len(self.triangle_uv)]=self.triangle_uv
 
     def draw_fragment(self):
         self.frame_buf[:,:]=[80,100,220]
@@ -287,11 +289,8 @@ class Renderer:
             return
 
         self.init_triangles_array()
-        self.triangles_array[:len(self.triangles)]=self.triangles
+        
         triangles=self.triangles_array
-
-        self.init_triangle_uv_array()
-        self.triangle_uv_array[:len(self.triangle_uv)]=self.triangle_uv
         triangle_uv=self.triangle_uv_array
 
         t_vectors_inv=np.linalg.inv(
