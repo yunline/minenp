@@ -212,8 +212,8 @@ class Renderer:
         cnt=0
         for model_pos in models:
             model=models[model_pos]
-            for n,(face,tex,hide,nv,uv) in enumerate(zip(
-                model.face,model.tex_ind,model.hide,model.face_n_vector,model.uv)):
+            for n,face,tex,hide,nv,uv in zip(range(len(model.face)),
+                model.face,model.tex_ind,model.hide,model.face_n_vector,model.uv):
 
                 brightness_cam=nv.dot(model_pos-0.5*nv-self.cam.pos)
 
