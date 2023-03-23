@@ -455,6 +455,7 @@ class App:
         pygame.event.set_grab(1)
         pygame.mouse.set_visible(0)
         pygame.key.stop_text_input()
+        pygame.key.set_repeat(1)
     
     def handle_event(self):
         for event in pygame.event.get():
