@@ -351,11 +351,11 @@ class Player:
         self.fly=0
 
         if self.fly:
-            self.vel_max=np.array([5,10,5])
+            self.vel_max=[5,10]
             self.damping_vector=np.array([4,10,4],np.float64)
             self.acc_base=np.array([0,0,0],dtype=np.float64)
         else:
-            self.vel_max=np.array([2,10,2])
+            self.vel_max=[4,10]
             self.damping_vector=np.array([8,0,8],np.float64)
             self.acc_base=np.array([0,20,0],dtype=np.float64)
     
@@ -363,7 +363,12 @@ class Player:
         if all(self.acc==self.acc_base):
             self.vel-=self.vel*(dt*self.damping_vector).clip(0,1)
         self.vel+=self.acc*dt
-        self.vel=self.vel.clip(-self.vel_max,self.vel_max)
+        vxz=self.vel[0]**2+self.vel[2]**2
+        if vxz>self.vel_max[0]**2:
+            v_rate=self.vel_max[0]/(vxz**0.5)
+            self.vel[0]*=v_rate
+            self.vel[2]*=v_rate
+        self.vel[1]=np.clip(self.vel[1],-self.vel_max[1],self.vel_max[1])
         self.cam.pos[:]=self.get_collided(
             self.vel*dt,self.cam.pos)
         
