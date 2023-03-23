@@ -81,10 +81,13 @@ class Cam:
             [n[0]*n[2]*_cos+n[1]*sine,n[1]*n[2]*_cos-n[0]*sine,n[2]**2*_cos+cosine]
         ])
     
-    def __init__(self,fov=90):
+    def init_fov(self,fov):
         self.fov=fov*np.pi/180
         self.fov_cos=np.cos(self.fov/2)
         self.perspective=(size[0]/2)/np.tan(self.fov/2)
+
+    def __init__(self,fov=90):
+        self.init_fov(fov)        
 
         self.pos=np.array([0,-4,0],dtype=np.float64)
         self.mat=np.array([
