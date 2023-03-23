@@ -181,8 +181,8 @@ class Renderer:
         self.vertex_tmp=None
 
         self.sun_vector=np.array([0.707,0.707,0],dtype=np.float64)
-        self.gamma_vector=np.array([-0.07,-0.27,0.7],dtype=np.float64)
-        # gamma向量 [摄像机因子,太阳因子,零次因子]
+        self.gamma_vector=np.array([-0.01,-0.27,0.72],dtype=np.float64)
+        # gamma向量 [摄像机因子,太阳因子,零次项因子]
     
     def load_tex(self):
         def load(name):
