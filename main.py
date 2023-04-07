@@ -35,6 +35,7 @@ class Block:
 
     def __init__(self,pos):
         self.pos=pos
+        self.vertex=self.vertex_template+self.pos
         self.hide=[0,0,0,0,0,0]
 
 class BlockGrass(Block):
@@ -156,7 +157,6 @@ class Scene:
 class Renderer:
     tex={}
     vertex=[]
-    quads=[]
     quad_tex=[]
     quad_data=[]
 
@@ -171,6 +171,9 @@ class Renderer:
         self.sun_vector=np.array([0.707,0.707,0],dtype=np.float64)
         self.gamma_vector=np.array([-0.01,-0.27,0.72],dtype=np.float64)
         # gamma向量 [摄像机因子,太阳因子,零次项因子]
+
+        self.quads=np.zeros((10000,3,3),dtype=np.float64)
+        self.nquads=0
     
     def load_tex(self):
         def load(name):
@@ -190,37 +193,42 @@ class Renderer:
     
     def convert_model(self,models):
         self.vertex.clear()
-        self.quads.clear()
         self.quad_tex.clear()
         self.quad_data.clear()
         for model_pos in models:
-            model=models[model_pos]
-            self.vertex.extend(model.vertex_template+model.pos)
+            self.vertex.extend(models[model_pos].vertex)
         self.transform_vertex()
 
-        cnt=0
-        for model_pos in models:
+        cnt=-8
+        self.nquads=0
+        model_pos_iter=models.keys()
+        relative_pos_array=np.array(list(model_pos_iter),dtype=np.float64)-self.cam.pos
+        for model_pos,relative_pos in zip(model_pos_iter,relative_pos_array):
+            cnt+=8
             model=models[model_pos]
-            for n,face,tex,hide,nv in zip(range(len(model.face)),
+            if all(model.hide): # 跳过完全遮挡
+                continue
+            r=np.linalg.norm(relative_pos)
+            if r>20: # 跳过远距离方块
+                continue
+            if (relative_pos.dot(self.cam.mat[2])<0 and r>2): # 跳过背面
+                continue
+            for face_direction,face,tex,hide,nv in zip([0,1,2,3,4,5],
                 model.face,model.tex_ind,model.hide,model.face_n_vector):
 
-                brightness_cam=nv.dot(model_pos-0.5*nv-self.cam.pos)
+                brightness_cam=nv.dot(relative_pos-0.5*nv)
 
-                brightness_sun=nv.dot(self.sun_vector)
                 # 亮度越小（负数）材质越亮
                 if (not hide) and brightness_cam<-self.cam.fov_cos: # 相邻剔除 背面剔除
-                    t=np.array([self.vertex_tmp[face[i]+cnt] for i in [0,3,1]])
+                    q=self.vertex_tmp[(face[0]+cnt,face[3]+cnt,face[1]+cnt),]
+                    brightness_sun=nv.dot(self.sun_vector)
 
-                    if all(i[2]<0 for i in t):
-                        continue
-
-                    self.quads.append(t)
+                    self.quads[self.nquads]=q
+                    self.nquads+=1
                     self.quad_tex.append(self.tex[tex])
-                    user_data=(tex,model,n,
+                    user_data=(tex,model,face_direction,
                         (brightness_cam,brightness_sun,1))
                     self.quad_data.append(user_data)
-
-            cnt+=8
 
     def transform_vertex(self):
         if not self.vertex:
@@ -233,10 +241,10 @@ class Renderer:
     def draw_fragment(self):
         self.frame_buf[:,:]=[80,100,220]
 
-        if not self.quads:
+        if self.nquads==0:
             return
         
-        quads=np.array(self.quads,dtype=np.float64)
+        quads=self.quads[:self.nquads]
 
         q_vectors_inv=np.linalg.inv(
             quads[:,(1,2),:2]-quads[:,(0,0),:2])
@@ -256,7 +264,7 @@ class Renderer:
             _uv[:]=_mn*quads[:,(1,2),2]/_z
 
             z_tmp,n_tmp,uv_tmp=0,0,[0,0] # z-buffer
-            for n,z,uv in zip(range(len(self.quads)),_z,_uv):
+            for n,z,uv in zip(range(len(quads)),_z,_uv):
                 if 0<uv[0]<1 and 0<uv[1]<1:
                     if z>z_tmp:
                         z_tmp,n_tmp,uv_tmp=z,n,uv
@@ -446,7 +454,7 @@ class App:
             'XYZ:%.2f/%.2f/%.2f'%(*self.cam.pos,),
             'Front:%.2f/%.2f'%(self.cam.front[0],self.cam.front[2]),
             'Vel:%.2f/%.2f/%.2f'%(*self.player.vel,),
-            'nQuads:%d'%len(self.renderer.quads),
+            'nQuads:%d'%self.renderer.nquads,
             'Floating:%s'%bool(self.player.floting),
             ('Looking-at:None'
                 if l_at[0] is None else
