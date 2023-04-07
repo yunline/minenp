@@ -163,14 +163,9 @@ class Scene:
 class Renderer:
     tex={}
     vertex=[]
-    uv=[]
     triangles=[]
-    triangle_uv=[]
     triangle_tex=[]
     triangle_data=[]
-
-    triangles_array=np.zeros((0,3,3),dtype=np.float64)
-    triangle_uv_array=np.zeros((0,3,2),dtype=np.float64)
 
     def __init__(self,cam):
         self.cam=cam
@@ -179,6 +174,7 @@ class Renderer:
 
         self.looking_at=[None,None]
         self.vertex_tmp=None
+        self.pvertex_tmp=None
 
         self.sun_vector=np.array([0.707,0.707,0],dtype=np.float64)
         self.gamma_vector=np.array([-0.01,-0.27,0.72],dtype=np.float64)
@@ -200,11 +196,9 @@ class Renderer:
         self.frame_sf=pygame.Surface(size//rate)
         self.frame_buf=pygame.surfarray.pixels3d(self.frame_sf)
     
-    def convert_model(self,models): # 方块结构→三角形 
+    def convert_model(self,models):
         self.vertex.clear()
-        self.uv.clear()
         self.triangles.clear()
-        self.triangle_uv.clear()
         self.triangle_tex.clear()
         self.triangle_data.clear()
         for model_pos in models:
@@ -223,23 +217,16 @@ class Renderer:
                 brightness_sun=nv.dot(self.sun_vector)
                 # 亮度越小（负数）材质越亮
                 if (not hide) and brightness_cam<-self.cam.fov_cos: # 相邻剔除 背面剔除
-                    _f=[self.vertex_tmp[face[i]+cnt] for i in range(4)]
-                    t1=[_f[0],_f[1],_f[2]]
-                    t2=[_f[0],_f[3],_f[2]]
+                    t=np.array([self.vertex_tmp[face[i]+cnt] for i in [0,3,1]])
+
+                    if all(i[2]<0 for i in t):
+                        continue
+
+                    self.triangles.append(t)
+                    self.triangle_tex.append(self.tex[tex])
                     user_data=(tex,model,n,
                         (brightness_cam,brightness_sun,1))
-
-                    if not any(i[2]<0 for i in t1):
-                        self.triangles.append(t1)
-                        self.triangle_tex.append(self.tex[tex])
-                        self.triangle_data.append(user_data)
-                        self.triangle_uv.append([uv[0],uv[1],uv[2]])
-
-                    if not any(i[2]<0 for i in t2):
-                        self.triangles.append(t2)
-                        self.triangle_tex.append(self.tex[tex])
-                        self.triangle_data.append(user_data)
-                        self.triangle_uv.append([uv[0],uv[3],uv[2]])
+                    self.triangle_data.append(user_data)
 
             cnt+=8
 
@@ -249,7 +236,7 @@ class Renderer:
         _vertex=np.dot(self.vertex-self.cam.pos,self.cam.mat_inv)
         _vertex[:,2]=1/_vertex[:,2]
         _vertex[:,:2]*=self.cam.perspective*_vertex[:,(2,2)]
-        self.vertex_tmp=_vertex+(size[0]/2,size[1]/2,0)
+        self.vertex_tmp=_vertex
 
     def draw_wireframe(self,sf):
         self.debug_cnt=0
@@ -267,66 +254,49 @@ class Renderer:
     def get_array_len(_list):
         return (len(_list)//100+1)*100
 
-    def init_triangles_array(self):
-        if len(self.triangles_array)<len(self.triangles) or\
-            len(self.triangles_array)>len(self.triangles)+200:
-            self.triangles_array=np.zeros(
-                (self.get_array_len(self.triangles)
-                ,3,3),dtype=np.float64)
-            self.triangles_array[:,1]=[2,0,0]
-            self.triangles_array[:,2]=[0,2,0]
-
-            self.triangle_uv_array=np.zeros(
-                (self.get_array_len(self.triangle_uv),
-                3,2),dtype=np.float64)
-            self.triangle_uv_array[:,1]=[2,0]
-            self.triangle_uv_array[:,2]=[0,2]
-
-        self.triangles_array[:len(self.triangles)]=self.triangles
-        self.triangle_uv_array[:len(self.triangle_uv)]=self.triangle_uv
-
     def draw_fragment(self):
         self.frame_buf[:,:]=[80,100,220]
 
         if not self.triangles:
             return
-
-        self.init_triangles_array()
         
-        triangles=self.triangles_array
-        triangle_uv=self.triangle_uv_array
+        triangles=np.array(self.triangles,dtype=np.float64)
 
         t_vectors_inv=np.linalg.inv(
             triangles[:,(1,2),:2]-triangles[:,(0,0),:2])
-        uv_vectors=triangle_uv[:,(1,2)]-triangle_uv[:,(0,0)]
         delta_z=triangles[:,(1,2),2]-triangles[:,(0,0),2]
 
         _mn=np.zeros((len(triangles),2),dtype=np.float64)
+        _z=np.zeros((len(triangles),1),dtype=np.float64)
+        _uv=np.zeros((len(triangles),2),dtype=np.float64)
 
         def z_buffer(p):
             # Optimized "for i: mn[i].dot(t_vectors_inv[i])"
             _mn[:,0]=p[:,0]*t_vectors_inv[:,0,0]+p[:,1]*t_vectors_inv[:,1,0]
             _mn[:,1]=p[:,0]*t_vectors_inv[:,0,1]+p[:,1]*t_vectors_inv[:,1,1]
 
-            z_tmp,n_tmp,mn_tmp=0,0,[0,0] # z-buffer
-            for n,mn in zip(range(len(self.triangles)),_mn):
-                if mn[0]+mn[1]<1 and 0<mn[0] and 0<mn[1]:
-                    z=mn.dot(delta_z[n])+triangles[n,0,2]
+            _z[:,0]=_mn[:,0]*delta_z[:,0]+_mn[:,1]*delta_z[:,1]+triangles[:,0,2]
 
+            _uv[:]=_mn*triangles[:,(1,2),2]/_z
+
+            z_tmp,n_tmp,uv_tmp=0,0,[0,0] # z-buffer
+            for n,uv in zip(range(len(self.triangles)),_uv):
+                z=_z[n]
+                if 0<uv[0]<1 and 0<uv[1]<1:
                     if z>z_tmp:
-                        z_tmp,n_tmp,mn_tmp=z,n,mn
-            return z_tmp,n_tmp,mn_tmp
+                        z_tmp,n_tmp,uv_tmp=z,n,uv
+            return z_tmp,n_tmp,uv_tmp
         
         def sample(uv,tex,border,brightness):
             if border and (any(uv>15) or any(uv<1)):
                 return [255,255,255]
-
-            u,v=int(uv[0])%16,int(uv[1])%16
+            clamp=lambda n:min(max(int(n),0),15)
+            u,v=clamp(uv[0]),clamp(uv[1])
             _b=self.gamma_vector.dot(brightness)
             return [int(i) if i<256 else 255 for i in tex[u,v]*_b]
 
         # get looking-at
-        z_tmp,n_tmp,mn_tmp=z_buffer((size/2)-triangles[:,0,:2])
+        z_tmp,n_tmp,uv_tmp=z_buffer(0-triangles[:,0,:2])
         if z_tmp>1/4:
             self.looking_at[0]=self.triangle_data[n_tmp][1]
             self.looking_at[1]=self.triangle_data[n_tmp][2]
@@ -335,11 +305,10 @@ class Renderer:
         
         # z-buffer and sampling
         for p in ((x,y) for x in range(0,size[0],rate) for y in range(0,size[1],rate)):
-            z_tmp,n_tmp,mn_tmp=z_buffer(p-triangles[:,0,:2])    
+            z_tmp,n_tmp,uv_tmp=z_buffer(p-triangles[:,0,:2]-size/2)    
             if z_tmp>0:
-                uv=(mn_tmp*(triangles[n_tmp,(1,2),2])/(z_tmp)).dot(uv_vectors[n_tmp])
                 data=self.triangle_data[n_tmp]
-                self.frame_buf[p[0]//rate,p[1]//rate]=sample(uv,self.triangle_tex[n_tmp],
+                self.frame_buf[p[0]//rate,p[1]//rate]=sample(uv_tmp*16,self.triangle_tex[n_tmp],
                     data[1] is self.looking_at[0],data[3])
 
 class Player:
