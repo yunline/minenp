@@ -238,22 +238,6 @@ class Renderer:
         _vertex[:,:2]*=self.cam.perspective*_vertex[:,(2,2)]
         self.vertex_tmp=_vertex
 
-    def draw_wireframe(self,sf):
-        self.debug_cnt=0
-        for face in self.triangles:
-            face=np.array(face)
-            l=[]
-            for i in face:
-                l.append(i[0:2])
-            l=np.array(l)
-            if np.all(l<0):
-                continue
-            pygame.draw.aalines(sf,(255,255,255,255),4,l)
-
-    @staticmethod
-    def get_array_len(_list):
-        return (len(_list)//100+1)*100
-
     def draw_fragment(self):
         self.frame_buf[:,:]=[80,100,220]
 
@@ -505,8 +489,6 @@ class App:
             self.renderer.convert_model(self.scene.blocks)
             self.renderer.draw_fragment()
             self.sf.blit(pygame.transform.scale(self.renderer.frame_sf,size),(0,0,1,1))
-
-            #self.renderer.draw_wireframe(self.sf)
 
             pygame.draw.circle(self.sf,(255,255,0,127),(size[0]/2,size[1]/2),3)
 
