@@ -57,6 +57,7 @@ class BlockStone(Block):
             'stone']
 
 class Cam:
+    render_need_update=1
     @staticmethod        
     def Ry(beta):
         return np.array([
@@ -100,6 +101,7 @@ class Cam:
         self.angle_x=0
 
     def update(self,ax,ay):
+        self.render_need_update=1
         if np.pi/2>self.angle_x+ax>-np.pi/2:
             self.mat=np.dot(self.mat,self.Rn(ax,self.mat[0]))
             self.angle_x+=ax
@@ -110,8 +112,10 @@ class Cam:
 
 class Scene:
     blocks={}
+    render_need_update=1
 
     def set_block(self,pos,cls):
+        self.render_need_update=1
         block=cls(pos)
         x,y,z=pos
         self.blocks[(x,y,z)]=block
@@ -136,6 +140,7 @@ class Scene:
             self.blocks[(x,y+1,z)].hide[4]=1
     
     def del_block(self,pos):
+        self.render_need_update=1
         pos=tuple(pos)
         if pos not in self.blocks:
             return
@@ -160,8 +165,9 @@ class Renderer:
     quad_tex=[]
     quad_data=[]
 
-    def __init__(self,cam):
+    def __init__(self,cam,scene):
         self.cam=cam
+        self.scene=scene
         self.load_tex()
         self.init_frame_buf()
 
@@ -192,11 +198,16 @@ class Renderer:
         self.frame_buf=pygame.surfarray.pixels3d(self.frame_sf)
     
     def convert_model(self,models):
-        self.vertex.clear()
+        if self.cam.render_need_update==0:
+            return
+        self.cam.render_need_update=0
         self.quad_tex.clear()
         self.quad_data.clear()
-        for model_pos in models:
-            self.vertex.extend(models[model_pos].vertex)
+        if self.scene.render_need_update:
+            self.scene.render_need_update=0
+            self.vertex=[]
+            for model_pos in models:
+                self.vertex.extend(models[model_pos].vertex)
         self.transform_vertex()
 
         cnt=-8
@@ -231,7 +242,7 @@ class Renderer:
                     self.quad_data.append(user_data)
 
     def transform_vertex(self):
-        if not self.vertex:
+        if len(self.vertex)==0:
             return
         _vertex=np.dot(self.vertex-self.cam.pos,self.cam.mat_inv)
         _vertex[:,2]=1/_vertex[:,2]
@@ -323,8 +334,12 @@ class Player:
             self.vel[0]*=v_rate
             self.vel[2]*=v_rate
         self.vel[1]=np.clip(self.vel[1],-self.vel_max[1],self.vel_max[1])
-        self.cam.pos[:]=self.get_collided(
+        
+        pos=self.get_collided(
             self.vel*dt,self.cam.pos)
+        if not all(self.cam.pos==pos):
+            self.cam.render_need_update=1
+        self.cam.pos[:]=pos
         
         self.acc[:]=self.acc_base
     
@@ -398,7 +413,7 @@ class App:
         pygame.display.set_caption('NPMC')
         self.cam=Cam()
         self.scene=Scene()
-        self.renderer=Renderer(self.cam)
+        self.renderer=Renderer(self.cam,self.scene)
         self.player=Player(self.cam,self.scene,self.renderer)
         self.timer=pygame.time.Clock()
         self.font=pygame.font.Font(font_path,20)
