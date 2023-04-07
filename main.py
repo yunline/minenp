@@ -31,13 +31,6 @@ class Block:
         [0,-1,0],[0,1,0],],
         dtype=np.float64)
 
-    uv=np.array(
-        [[[0,0],[0,1],[1,1],[1,0],],[[0,0],[0,1],[1,1],[1,0],],
-         [[0,0],[0,1],[1,1],[1,0],],[[0,0],[0,1],[1,1],[1,0],],
-         [[0,0],[0,1],[1,1],[1,0],],[[0,0],[0,1],[1,1],[1,0],],],
-        dtype=np.float64
-    )*16
-
     tex_ind=['','','','','','']
 
     def __init__(self,pos):
@@ -174,7 +167,6 @@ class Renderer:
 
         self.looking_at=[None,None]
         self.vertex_tmp=None
-        self.pvertex_tmp=None
 
         self.sun_vector=np.array([0.707,0.707,0],dtype=np.float64)
         self.gamma_vector=np.array([-0.01,-0.27,0.72],dtype=np.float64)
@@ -209,8 +201,8 @@ class Renderer:
         cnt=0
         for model_pos in models:
             model=models[model_pos]
-            for n,face,tex,hide,nv,uv in zip(range(len(model.face)),
-                model.face,model.tex_ind,model.hide,model.face_n_vector,model.uv):
+            for n,face,tex,hide,nv in zip(range(len(model.face)),
+                model.face,model.tex_ind,model.hide,model.face_n_vector):
 
                 brightness_cam=nv.dot(model_pos-0.5*nv-self.cam.pos)
 
@@ -264,8 +256,7 @@ class Renderer:
             _uv[:]=_mn*triangles[:,(1,2),2]/_z
 
             z_tmp,n_tmp,uv_tmp=0,0,[0,0] # z-buffer
-            for n,uv in zip(range(len(self.triangles)),_uv):
-                z=_z[n]
+            for n,z,uv in zip(range(len(self.triangles)),_z,_uv):
                 if 0<uv[0]<1 and 0<uv[1]<1:
                     if z>z_tmp:
                         z_tmp,n_tmp,uv_tmp=z,n,uv
@@ -274,10 +265,9 @@ class Renderer:
         def sample(uv,tex,border,brightness):
             if border and (any(uv>15) or any(uv<1)):
                 return [255,255,255]
-            clamp=lambda n:min(max(int(n),0),15)
-            u,v=clamp(uv[0]),clamp(uv[1])
+            u,v=int(uv[0]),int(uv[1])
             _b=self.gamma_vector.dot(brightness)
-            return [int(i) if i<256 else 255 for i in tex[u,v]*_b]
+            return [int(min(i,255)) for i in tex[u,v]*_b]
 
         # get looking-at
         z_tmp,n_tmp,uv_tmp=z_buffer(0-triangles[:,0,:2])
