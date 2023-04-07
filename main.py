@@ -156,9 +156,9 @@ class Scene:
 class Renderer:
     tex={}
     vertex=[]
-    triangles=[]
-    triangle_tex=[]
-    triangle_data=[]
+    quads=[]
+    quad_tex=[]
+    quad_data=[]
 
     def __init__(self,cam):
         self.cam=cam
@@ -190,9 +190,9 @@ class Renderer:
     
     def convert_model(self,models):
         self.vertex.clear()
-        self.triangles.clear()
-        self.triangle_tex.clear()
-        self.triangle_data.clear()
+        self.quads.clear()
+        self.quad_tex.clear()
+        self.quad_data.clear()
         for model_pos in models:
             model=models[model_pos]
             self.vertex.extend(model.vertex_template+model.pos)
@@ -214,11 +214,11 @@ class Renderer:
                     if all(i[2]<0 for i in t):
                         continue
 
-                    self.triangles.append(t)
-                    self.triangle_tex.append(self.tex[tex])
+                    self.quads.append(t)
+                    self.quad_tex.append(self.tex[tex])
                     user_data=(tex,model,n,
                         (brightness_cam,brightness_sun,1))
-                    self.triangle_data.append(user_data)
+                    self.quad_data.append(user_data)
 
             cnt+=8
 
@@ -233,30 +233,30 @@ class Renderer:
     def draw_fragment(self):
         self.frame_buf[:,:]=[80,100,220]
 
-        if not self.triangles:
+        if not self.quads:
             return
         
-        triangles=np.array(self.triangles,dtype=np.float64)
+        quads=np.array(self.quads,dtype=np.float64)
 
-        t_vectors_inv=np.linalg.inv(
-            triangles[:,(1,2),:2]-triangles[:,(0,0),:2])
-        delta_z=triangles[:,(1,2),2]-triangles[:,(0,0),2]
+        q_vectors_inv=np.linalg.inv(
+            quads[:,(1,2),:2]-quads[:,(0,0),:2])
+        delta_z=quads[:,(1,2),2]-quads[:,(0,0),2]
 
-        _mn=np.zeros((len(triangles),2),dtype=np.float64)
-        _z=np.zeros((len(triangles),1),dtype=np.float64)
-        _uv=np.zeros((len(triangles),2),dtype=np.float64)
+        _mn=np.zeros((len(quads),2),dtype=np.float64)
+        _z=np.zeros((len(quads),1),dtype=np.float64)
+        _uv=np.zeros((len(quads),2),dtype=np.float64)
 
         def z_buffer(p):
             # Optimized "for i: mn[i].dot(t_vectors_inv[i])"
-            _mn[:,0]=p[:,0]*t_vectors_inv[:,0,0]+p[:,1]*t_vectors_inv[:,1,0]
-            _mn[:,1]=p[:,0]*t_vectors_inv[:,0,1]+p[:,1]*t_vectors_inv[:,1,1]
+            _mn[:,0]=p[:,0]*q_vectors_inv[:,0,0]+p[:,1]*q_vectors_inv[:,1,0]
+            _mn[:,1]=p[:,0]*q_vectors_inv[:,0,1]+p[:,1]*q_vectors_inv[:,1,1]
 
-            _z[:,0]=_mn[:,0]*delta_z[:,0]+_mn[:,1]*delta_z[:,1]+triangles[:,0,2]
+            _z[:,0]=_mn[:,0]*delta_z[:,0]+_mn[:,1]*delta_z[:,1]+quads[:,0,2]
 
-            _uv[:]=_mn*triangles[:,(1,2),2]/_z
+            _uv[:]=_mn*quads[:,(1,2),2]/_z
 
             z_tmp,n_tmp,uv_tmp=0,0,[0,0] # z-buffer
-            for n,z,uv in zip(range(len(self.triangles)),_z,_uv):
+            for n,z,uv in zip(range(len(self.quads)),_z,_uv):
                 if 0<uv[0]<1 and 0<uv[1]<1:
                     if z>z_tmp:
                         z_tmp,n_tmp,uv_tmp=z,n,uv
@@ -270,19 +270,19 @@ class Renderer:
             return [int(min(i,255)) for i in tex[u,v]*_b]
 
         # get looking-at
-        z_tmp,n_tmp,uv_tmp=z_buffer(0-triangles[:,0,:2])
+        z_tmp,n_tmp,uv_tmp=z_buffer(0-quads[:,0,:2])
         if z_tmp>1/4:
-            self.looking_at[0]=self.triangle_data[n_tmp][1]
-            self.looking_at[1]=self.triangle_data[n_tmp][2]
+            self.looking_at[0]=self.quad_data[n_tmp][1]
+            self.looking_at[1]=self.quad_data[n_tmp][2]
         else:
             self.looking_at[0]=None
         
         # z-buffer and sampling
         for p in ((x,y) for x in range(0,size[0],rate) for y in range(0,size[1],rate)):
-            z_tmp,n_tmp,uv_tmp=z_buffer(p-triangles[:,0,:2]-size/2)    
+            z_tmp,n_tmp,uv_tmp=z_buffer(p-quads[:,0,:2]-size/2)    
             if z_tmp>0:
-                data=self.triangle_data[n_tmp]
-                self.frame_buf[p[0]//rate,p[1]//rate]=sample(uv_tmp*16,self.triangle_tex[n_tmp],
+                data=self.quad_data[n_tmp]
+                self.frame_buf[p[0]//rate,p[1]//rate]=sample(uv_tmp*16,self.quad_tex[n_tmp],
                     data[1] is self.looking_at[0],data[3])
 
 class Player:
@@ -446,6 +446,7 @@ class App:
             'XYZ:%.2f/%.2f/%.2f'%(*self.cam.pos,),
             'Front:%.2f/%.2f'%(self.cam.front[0],self.cam.front[2]),
             'Vel:%.2f/%.2f/%.2f'%(*self.player.vel,),
+            'nQuads:%d'%len(self.renderer.quads),
             'Floating:%s'%bool(self.player.floting),
             ('Looking-at:None'
                 if l_at[0] is None else
