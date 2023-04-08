@@ -2,15 +2,22 @@ import numpy as np
 import sys
 import pygame
 from pygame.locals import *
+import os
+import multiprocessing
+from multiprocessing.shared_memory import SharedMemory
 
 np.set_printoptions(precision=2, suppress=True)
 
 size=np.array((640,480))
 rate=10
+nthreads=8
 
 font_path='fusion-pixel-font-monospaced-otf-v2023.02.13/fusion-pixel-monospaced.otf'
 
 direction=('z-','z+','x-','x+','y-','y+')
+tex_ind={'grass_top':0,'grass_side':1,'grass_bottom':2,'stone':3}
+def tn2i(name):
+    return tex_ind[name]
 
 class Block:
     name='void'
@@ -31,7 +38,7 @@ class Block:
         [0,-1,0],[0,1,0],],
         dtype=np.float64)
 
-    tex_ind=['','','','','','']
+    tex_ind=[0,0,0,0,0,0]
 
     def __init__(self,pos):
         self.pos=pos
@@ -40,21 +47,21 @@ class Block:
 
 class BlockGrass(Block):
     name='grass'
-    tex_ind=['grass_side',
-            'grass_side',
-            'grass_side',
-            'grass_side',
-            'grass_top',
-            'grass_bottom']
+    tex_ind=[tn2i('grass_side'),
+            tn2i('grass_side'),
+            tn2i('grass_side'),
+            tn2i('grass_side'),
+            tn2i('grass_top'),
+            tn2i('grass_bottom')]
 
 class BlockStone(Block):
     name='stone'
-    tex_ind=['stone',
-            'stone',
-            'stone',
-            'stone',
-            'stone',
-            'stone']
+    tex_ind=[tn2i('stone'),
+            tn2i('stone'),
+            tn2i('stone'),
+            tn2i('stone'),
+            tn2i('stone'),
+            tn2i('stone')]
 
 class Cam:
     render_need_update=1
@@ -159,28 +166,39 @@ class Scene:
         if (x,y+1,z) in self.blocks:
             self.blocks[(x,y+1,z)].hide[4]=0
 
-class Renderer:
+class RendererMP:
     tex={}
-    vertex=[]
     quad_tex=[]
     quad_data=[]
+    nquads=0
+    gamma_vector=np.array([-0.01,-0.27,0.72],dtype=np.float64)
+    # gamma向量 [摄像机因子,太阳因子,零次项因子]
 
-    def __init__(self,cam,scene):
-        self.cam=cam
-        self.scene=scene
+    def __init__(self,input_queue,output_queue,shape):
+        #print(os.getpid())
+        frame_shared_mem=SharedMemory("frame_buf")
+        self.frame_buf=np.ndarray(shape=shape,dtype=np.uint8,buffer=frame_shared_mem.buf)
+        quads_shared_mem=SharedMemory("quads")
+        self.quads=np.ndarray(shape=(10000,3,3),dtype=np.float64,buffer=quads_shared_mem.buf)
         self.load_tex()
-        self.init_frame_buf()
+        output_queue.put(None)
+        while 1:
+            msg=input_queue.get()
+            if msg[0]=="stop":
+                del self.frame_buf
+                frame_shared_mem.close()
+                break
+            elif msg[0]=="quad_tex":
+                self.quad_tex=msg[1]
+            elif msg[0]=="quad_data":
+                self.quad_data=msg[1]
+            elif msg[0]=="nquads":
+                self.nquads=msg[1]
+            elif msg[0]=="draw":
+                self.draw_fragment(msg[1])
+                output_queue.put(None)
+                
 
-        self.looking_at=[None,None]
-        self.vertex_tmp=None
-
-        self.sun_vector=np.array([0.707,0.707,0],dtype=np.float64)
-        self.gamma_vector=np.array([-0.01,-0.27,0.72],dtype=np.float64)
-        # gamma向量 [摄像机因子,太阳因子,零次项因子]
-
-        self.quads=np.zeros((10000,3,3),dtype=np.float64)
-        self.nquads=0
-    
     def load_tex(self):
         def load(name):
             _sf=pygame.image.load(name)
@@ -188,14 +206,109 @@ class Renderer:
                 pygame.surfarray.array3d(_sf)
                 ,dtype=np.float64)
 
-        self.tex['grass_top']=load('tex/grass_top.png')
-        self.tex['grass_side']=load('tex/grass_side.png')
-        self.tex['grass_bottom']=load('tex/grass_bottom.png')
-        self.tex['stone']=load('tex/stone.png')
+        self.tex[tn2i('grass_top')]=load('tex/grass_top.png')
+        self.tex[tn2i('grass_side')]=load('tex/grass_side.png')
+        self.tex[tn2i('grass_bottom')]=load('tex/grass_bottom.png')
+        self.tex[tn2i('stone')]=load('tex/stone.png')
 
-    def init_frame_buf(self):
+    def draw_fragment(self,rect):
+        if self.nquads==0:
+            return
+        
+        quads=self.quads[:self.nquads]
+
+        q_vectors_inv=np.linalg.inv(
+            quads[:,(1,2),:2]-quads[:,(0,0),:2])
+        delta_z=quads[:,(1,2),2]-quads[:,(0,0),2]
+
+        _mn=np.zeros((len(quads),2),dtype=np.float64)
+        _z=np.ones((len(quads),1),dtype=np.float64)
+        _uv=np.zeros((len(quads),2),dtype=np.float64)
+
+        def z_buffer(p):
+            # Optimized "for i: mn[i].dot(t_vectors_inv[i])"
+            _mn[:,0]=p[:,0]*q_vectors_inv[:,0,0]+p[:,1]*q_vectors_inv[:,1,0]
+            _mn[:,1]=p[:,0]*q_vectors_inv[:,0,1]+p[:,1]*q_vectors_inv[:,1,1]
+
+            _z[:,0]=_mn[:,0]*delta_z[:,0]+_mn[:,1]*delta_z[:,1]+quads[:,0,2]
+
+            _uv[:]=_mn*quads[:,(1,2),2]/_z
+
+            z_tmp,n_tmp,uv_tmp=0,0,[0,0] # z-buffer
+            for n,z,uv in zip(range(len(quads)),_z,_uv):
+                if 0<uv[0]<1 and 0<uv[1]<1:
+                    if z>z_tmp:
+                        z_tmp,n_tmp,uv_tmp=z,n,uv
+            return z_tmp,n_tmp,uv_tmp
+        
+        def sample(uv,tex,border,brightness):
+            if border and (any(uv>15) or any(uv<1)):
+                return [255,255,255]
+            u,v=int(uv[0]),int(uv[1])
+            _b=self.gamma_vector.dot(brightness)
+            return [int(min(i,255)) for i in tex[u,v]*_b]
+        
+        # z-buffer and sampling
+        for p in ((x,y) for x in range(rect.left,rect.right,rate) for y in range(rect.top,rect.bottom,rate)):
+            z_tmp,n_tmp,uv_tmp=z_buffer(p-quads[:,0,:2]-size/2)    
+            if z_tmp>0:
+                data=self.quad_data[n_tmp]
+                self.frame_buf[p[0]//rate,p[1]//rate]=\
+                    sample(uv_tmp*16,self.tex[self.quad_tex[n_tmp]],
+                    data[0],data[1])
+
+class Renderer:
+    vertex=[]
+    quad_tex=[]
+    quad_data=[]
+    quad_data_render=[]
+
+    def __init__(self,cam,scene):
+        self.cam=cam
+        self.scene=scene
+
+        self.looking_at=[None,None]
+        self.vertex_tmp=None
+
+        self.sun_vector=np.array([0.707,0.707,0],dtype=np.float64)
+
+        self.nquads=0
+
         self.frame_sf=pygame.Surface(size//rate)
         self.frame_buf=pygame.surfarray.pixels3d(self.frame_sf)
+
+        self.frame_shared_mem=SharedMemory("frame_buf",create=True,size=self.frame_buf.nbytes)
+        self.frame_shared_buf=np.ndarray(shape=self.frame_buf.shape,dtype=np.uint8,buffer=self.frame_shared_mem.buf)
+
+        self.quads_shared_mem=SharedMemory("quads",create=True,size=(10000*3*3*8))
+        self.quads=np.ndarray(shape=(10000,3,3),dtype=np.float64,buffer=self.quads_shared_mem.buf)
+
+        self.o_queues=[multiprocessing.Queue() for _ in range(nthreads)]
+        self.i_queues=[multiprocessing.Queue() for _ in range(nthreads)]
+        self.mp=[]
+        for i,o in zip(self.i_queues,self.o_queues):
+            self.mp.append(multiprocessing.Process(target=RendererMP,args=(o,i,self.frame_buf.shape)))
+            self.mp[-1].start()
+
+        for q in self.i_queues:
+            q.get()
+
+    def close(self):
+        for q in self.o_queues:
+            q.put(("stop",))
+        del self.frame_shared_buf
+        self.frame_shared_mem.unlink()
+        del self.quads
+        self.quads_shared_mem.unlink()
+
+        for i in self.mp:
+            i.terminate()
+    
+    def sync_data(self):
+        for q in self.o_queues:
+            q.put(("quad_tex",self.quad_tex))
+            q.put(("quad_data",self.quad_data_render))
+            q.put(("nquads",self.nquads))
     
     def convert_model(self,models):
         if self.cam.render_need_update==0:
@@ -203,6 +316,7 @@ class Renderer:
         self.cam.render_need_update=0
         self.quad_tex.clear()
         self.quad_data.clear()
+        self.quad_data_render.clear()
         if self.scene.render_need_update:
             self.scene.render_need_update=0
             self.vertex=[]
@@ -236,10 +350,17 @@ class Renderer:
 
                     self.quads[self.nquads]=q
                     self.nquads+=1
-                    self.quad_tex.append(self.tex[tex])
-                    user_data=(tex,model,face_direction,
-                        (brightness_cam,brightness_sun,1))
+                    self.quad_tex.append(tex)
+
+                    user_data=(model,face_direction)
                     self.quad_data.append(user_data)
+
+                    user_data=(model is self.looking_at[0],
+                        (brightness_cam,brightness_sun,1))
+                    self.quad_data_render.append(user_data)
+
+
+        self.sync_data()
 
     def transform_vertex(self):
         if len(self.vertex)==0:
@@ -248,6 +369,15 @@ class Renderer:
         _vertex[:,2]=1/_vertex[:,2]
         _vertex[:,:2]*=self.cam.perspective*_vertex[:,(2,2)]
         self.vertex_tmp=_vertex
+    
+    def draw_fragment(self):
+        self.frame_shared_buf[:]=[80,100,220]
+        for n,q in enumerate(self.o_queues):
+            q.put(("draw",pygame.Rect(0,n*size[1]//nthreads,
+                size[0],size[1]//nthreads)))
+        for q in self.i_queues: # wait for render
+            q.get()
+        self.frame_buf[:]=self.frame_shared_buf
 
     def update_looking_at(self):
         quads=self.quads[:self.nquads]
@@ -274,55 +404,10 @@ class Renderer:
         
         # get looking-at
         if z_tmp>1/4:
-            self.looking_at[0]=self.quad_data[n_tmp][1]
-            self.looking_at[1]=self.quad_data[n_tmp][2]
+            self.looking_at[0]=self.quad_data[n_tmp][0]
+            self.looking_at[1]=self.quad_data[n_tmp][1]
         else:
             self.looking_at[0]=None
-
-    def draw_fragment(self,rect):
-        if self.nquads==0:
-            return
-        
-        quads=self.quads[:self.nquads]
-
-        q_vectors_inv=np.linalg.inv(
-            quads[:,(1,2),:2]-quads[:,(0,0),:2])
-        delta_z=quads[:,(1,2),2]-quads[:,(0,0),2]
-
-        _mn=np.zeros((len(quads),2),dtype=np.float64)
-        _z=np.zeros((len(quads),1),dtype=np.float64)
-        _uv=np.zeros((len(quads),2),dtype=np.float64)
-
-        def z_buffer(p):
-            # Optimized "for i: mn[i].dot(t_vectors_inv[i])"
-            _mn[:,0]=p[:,0]*q_vectors_inv[:,0,0]+p[:,1]*q_vectors_inv[:,1,0]
-            _mn[:,1]=p[:,0]*q_vectors_inv[:,0,1]+p[:,1]*q_vectors_inv[:,1,1]
-
-            _z[:,0]=_mn[:,0]*delta_z[:,0]+_mn[:,1]*delta_z[:,1]+quads[:,0,2]
-
-            _uv[:]=_mn*quads[:,(1,2),2]/_z
-
-            z_tmp,n_tmp,uv_tmp=0,0,[0,0] # z-buffer
-            for n,z,uv in zip(range(len(quads)),_z,_uv):
-                if 0<uv[0]<1 and 0<uv[1]<1:
-                    if z>z_tmp:
-                        z_tmp,n_tmp,uv_tmp=z,n,uv
-            return z_tmp,n_tmp,uv_tmp
-        
-        def sample(uv,tex,border,brightness):
-            if border and (any(uv>15) or any(uv<1)):
-                return [255,255,255]
-            u,v=int(uv[0]),int(uv[1])
-            _b=self.gamma_vector.dot(brightness)
-            return [int(min(i,255)) for i in tex[u,v]*_b]
-        
-        # z-buffer and sampling
-        for p in ((x,y) for x in range(rect.left,rect.right,rate) for y in range(rect.top,rect.bottom,rate)):
-            z_tmp,n_tmp,uv_tmp=z_buffer(p-quads[:,0,:2]-size/2)    
-            if z_tmp>0:
-                data=self.quad_data[n_tmp]
-                self.frame_buf[p[0]//rate,p[1]//rate]=sample(uv_tmp*16,self.quad_tex[n_tmp],
-                    data[1] is self.looking_at[0],data[3])
 
 class Player:
     def __init__(self,cam,scene,renderer):
@@ -490,6 +575,7 @@ class App:
             'Front:%.2f/%.2f'%(self.cam.front[0],self.cam.front[2]),
             'Vel:%.2f/%.2f/%.2f'%(*self.player.vel,),
             'nQuads:%d'%self.renderer.nquads,
+            'nThreads:%d'%nthreads,
             'Floating:%s'%bool(self.player.floting),
             ('Looking-at:None'
                 if l_at[0] is None else
@@ -520,9 +606,7 @@ class App:
             self.handle_event()
             self.renderer.convert_model(self.scene.blocks)
             self.renderer.update_looking_at()
-            self.renderer.frame_buf[:,:]=[80,100,220]
-            r=pygame.Rect(0, 0, *size)
-            self.renderer.draw_fragment(r)
+            self.renderer.draw_fragment()
             self.sf.blit(pygame.transform.scale(self.renderer.frame_sf,size),(0,0,1,1))
 
             pygame.draw.circle(self.sf,(255,255,0,127),(size[0]/2,size[1]/2),3)
@@ -530,6 +614,7 @@ class App:
             self.draw_debug_info()
             pygame.display.update()
             self.timer.tick(60)
+        self.renderer.close()
 
 if __name__=='__main__':
     app=App()
