@@ -249,6 +249,36 @@ class Renderer:
         _vertex[:,:2]*=self.cam.perspective*_vertex[:,(2,2)]
         self.vertex_tmp=_vertex
 
+    def update_looking_at(self):
+        quads=self.quads[:self.nquads]
+
+        q_vectors_inv=np.linalg.inv(
+            quads[:,(1,2),:2]-quads[:,(0,0),:2])
+        delta_z=quads[:,(1,2),2]-quads[:,(0,0),2]
+
+        _mn=np.zeros((len(quads),2),dtype=np.float64)
+        _z=np.zeros((len(quads),1),dtype=np.float64)
+        _uv=np.zeros((len(quads),2),dtype=np.float64)
+
+        p=0-quads[:,0,:2]
+        # Optimized "for i: mn[i].dot(t_vectors_inv[i])"
+        _mn[:,0]=p[:,0]*q_vectors_inv[:,0,0]+p[:,1]*q_vectors_inv[:,1,0]
+        _mn[:,1]=p[:,0]*q_vectors_inv[:,0,1]+p[:,1]*q_vectors_inv[:,1,1]
+        _z[:,0]=_mn[:,0]*delta_z[:,0]+_mn[:,1]*delta_z[:,1]+quads[:,0,2]
+        _uv[:]=_mn*quads[:,(1,2),2]/_z
+        z_tmp,n_tmp,uv_tmp=0,0,[0,0] # z-buffer
+        for n,z,uv in zip(range(len(quads)),_z,_uv):
+            if 0<uv[0]<1 and 0<uv[1]<1:
+                if z>z_tmp:
+                    z_tmp,n_tmp,uv_tmp=z,n,uv
+        
+        # get looking-at
+        if z_tmp>1/4:
+            self.looking_at[0]=self.quad_data[n_tmp][1]
+            self.looking_at[1]=self.quad_data[n_tmp][2]
+        else:
+            self.looking_at[0]=None
+
     def draw_fragment(self,rect):
         if self.nquads==0:
             return
@@ -285,14 +315,6 @@ class Renderer:
             u,v=int(uv[0]),int(uv[1])
             _b=self.gamma_vector.dot(brightness)
             return [int(min(i,255)) for i in tex[u,v]*_b]
-
-        # get looking-at
-        z_tmp,n_tmp,uv_tmp=z_buffer(0-quads[:,0,:2])
-        if z_tmp>1/4:
-            self.looking_at[0]=self.quad_data[n_tmp][1]
-            self.looking_at[1]=self.quad_data[n_tmp][2]
-        else:
-            self.looking_at[0]=None
         
         # z-buffer and sampling
         for p in ((x,y) for x in range(rect.left,rect.right,rate) for y in range(rect.top,rect.bottom,rate)):
@@ -496,9 +518,8 @@ class App:
         self.off=0
         while not self.off:
             self.handle_event()
-
-            self.sf.fill((0,0,0))
             self.renderer.convert_model(self.scene.blocks)
+            self.renderer.update_looking_at()
             self.renderer.frame_buf[:,:]=[80,100,220]
             r=pygame.Rect(0, 0, *size)
             self.renderer.draw_fragment(r)
