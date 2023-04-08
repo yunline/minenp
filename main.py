@@ -249,9 +249,7 @@ class Renderer:
         _vertex[:,:2]*=self.cam.perspective*_vertex[:,(2,2)]
         self.vertex_tmp=_vertex
 
-    def draw_fragment(self):
-        self.frame_buf[:,:]=[80,100,220]
-
+    def draw_fragment(self,rect):
         if self.nquads==0:
             return
         
@@ -297,7 +295,7 @@ class Renderer:
             self.looking_at[0]=None
         
         # z-buffer and sampling
-        for p in ((x,y) for x in range(0,size[0],rate) for y in range(0,size[1],rate)):
+        for p in ((x,y) for x in range(rect.left,rect.right,rate) for y in range(rect.top,rect.bottom,rate)):
             z_tmp,n_tmp,uv_tmp=z_buffer(p-quads[:,0,:2]-size/2)    
             if z_tmp>0:
                 data=self.quad_data[n_tmp]
@@ -501,7 +499,9 @@ class App:
 
             self.sf.fill((0,0,0))
             self.renderer.convert_model(self.scene.blocks)
-            self.renderer.draw_fragment()
+            self.renderer.frame_buf[:,:]=[80,100,220]
+            r=pygame.Rect(0, 0, *size)
+            self.renderer.draw_fragment(r)
             self.sf.blit(pygame.transform.scale(self.renderer.frame_sf,size),(0,0,1,1))
 
             pygame.draw.circle(self.sf,(255,255,0,127),(size[0]/2,size[1]/2),3)
