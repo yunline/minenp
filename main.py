@@ -11,6 +11,7 @@ np.set_printoptions(precision=2, suppress=True)
 size=np.array((640,480))
 rate=10
 nthreads=8
+maxnquad=5000
 
 font_path='fusion-pixel-font-monospaced-otf-v2023.02.13/fusion-pixel-monospaced.otf'
 
@@ -168,18 +169,22 @@ class Scene:
 
 class RendererMP:
     tex={}
-    quad_tex=[]
     quad_data=[]
     nquads=0
     gamma_vector=np.array([-0.01,-0.27,0.72],dtype=np.float64)
     # gamma向量 [摄像机因子,太阳因子,零次项因子]
+    looking_at=[]
 
     def __init__(self,input_queue,output_queue,shape):
         #print(os.getpid())
         frame_shared_mem=SharedMemory("frame_buf")
         self.frame_buf=np.ndarray(shape=shape,dtype=np.uint8,buffer=frame_shared_mem.buf)
         quads_shared_mem=SharedMemory("quads")
-        self.quads=np.ndarray(shape=(10000,3,3),dtype=np.float64,buffer=quads_shared_mem.buf)
+        self.quads=np.ndarray(shape=(maxnquad,3,3),dtype=np.float64,buffer=quads_shared_mem.buf)
+        quad_tex_shared_mem=SharedMemory("quad_tex")
+        self.quad_tex=np.ndarray(shape=(maxnquad,),dtype=np.uint16,buffer=quad_tex_shared_mem.buf)
+        quad_brightness_shared_mem=SharedMemory("quad_brightness")
+        self.quad_brightness=np.ndarray(shape=(maxnquad,3),dtype=np.float64,buffer=quad_brightness_shared_mem.buf)
         self.load_tex()
         output_queue.put(None)
         while 1:
@@ -187,17 +192,20 @@ class RendererMP:
             if msg[0]=="stop":
                 del self.frame_buf
                 frame_shared_mem.close()
+                del self.quads
+                quads_shared_mem.close()
+                del self.quad_tex
+                quad_tex_shared_mem.close()
+                del self.quad_brightness
+                quad_brightness_shared_mem.close()
                 break
-            elif msg[0]=="quad_tex":
-                self.quad_tex=msg[1]
-            elif msg[0]=="quad_data":
-                self.quad_data=msg[1]
+            elif msg[0]=="looking_at":
+                self.looking_at=msg[1]
             elif msg[0]=="nquads":
                 self.nquads=msg[1]
             elif msg[0]=="draw":
                 self.draw_fragment(msg[1])
                 output_queue.put(None)
-                
 
     def load_tex(self):
         def load(name):
@@ -252,22 +260,20 @@ class RendererMP:
         for p in ((x,y) for x in range(rect.left,rect.right,rate) for y in range(rect.top,rect.bottom,rate)):
             z_tmp,n_tmp,uv_tmp=z_buffer(p-quads[:,0,:2]-size/2)    
             if z_tmp>0:
-                data=self.quad_data[n_tmp]
                 self.frame_buf[p[0]//rate,p[1]//rate]=\
                     sample(uv_tmp*16,self.tex[self.quad_tex[n_tmp]],
-                    data[0],data[1])
+                    n_tmp in self.looking_at,self.quad_brightness[n_tmp])
 
 class Renderer:
     vertex=[]
-    quad_tex=[]
     quad_data=[]
-    quad_data_render=[]
+    looking_at=[None,None]
+    looking_at_quads=[]
 
     def __init__(self,cam,scene):
         self.cam=cam
         self.scene=scene
 
-        self.looking_at=[None,None]
         self.vertex_tmp=None
 
         self.sun_vector=np.array([0.707,0.707,0],dtype=np.float64)
@@ -280,8 +286,14 @@ class Renderer:
         self.frame_shared_mem=SharedMemory("frame_buf",create=True,size=self.frame_buf.nbytes)
         self.frame_shared_buf=np.ndarray(shape=self.frame_buf.shape,dtype=np.uint8,buffer=self.frame_shared_mem.buf)
 
-        self.quads_shared_mem=SharedMemory("quads",create=True,size=(10000*3*3*8))
-        self.quads=np.ndarray(shape=(10000,3,3),dtype=np.float64,buffer=self.quads_shared_mem.buf)
+        self.quads_shared_mem=SharedMemory("quads",create=True,size=(maxnquad*3*3*8))
+        self.quads=np.ndarray(shape=(maxnquad,3,3),dtype=np.float64,buffer=self.quads_shared_mem.buf)
+
+        self.quad_tex_shared_mem=SharedMemory("quad_tex",create=True,size=(maxnquad*2))
+        self.quad_tex=np.ndarray(shape=(maxnquad,),dtype=np.uint16,buffer=self.quad_tex_shared_mem.buf)
+
+        self.quad_brightness_shared_mem=SharedMemory("quad_brightness",create=True,size=(maxnquad*3*8))
+        self.quad_brightness=np.ndarray(shape=(maxnquad,3),dtype=np.float64,buffer=self.quad_brightness_shared_mem.buf)
 
         self.o_queues=[multiprocessing.Queue() for _ in range(nthreads)]
         self.i_queues=[multiprocessing.Queue() for _ in range(nthreads)]
@@ -296,27 +308,30 @@ class Renderer:
     def close(self):
         for q in self.o_queues:
             q.put(("stop",))
+
+        for i in self.mp:
+            i.join() # 等待进程回收
+        
         del self.frame_shared_buf
         self.frame_shared_mem.unlink()
         del self.quads
         self.quads_shared_mem.unlink()
-
-        for i in self.mp:
-            i.terminate()
+        del self.quad_tex
+        self.quad_tex_shared_mem.unlink()
+        del self.quad_brightness
+        self.quad_brightness_shared_mem.unlink()
     
     def sync_data(self):
         for q in self.o_queues:
-            q.put(("quad_tex",self.quad_tex))
-            q.put(("quad_data",self.quad_data_render))
+            q.put(("looking_at",self.looking_at_quads))
             q.put(("nquads",self.nquads))
     
     def convert_model(self,models):
         if self.cam.render_need_update==0:
             return
         self.cam.render_need_update=0
-        self.quad_tex.clear()
         self.quad_data.clear()
-        self.quad_data_render.clear()
+        self.looking_at_quads.clear()
         if self.scene.render_need_update:
             self.scene.render_need_update=0
             self.vertex=[]
@@ -349,16 +364,12 @@ class Renderer:
                     brightness_sun=nv.dot(self.sun_vector)
 
                     self.quads[self.nquads]=q
+                    self.quad_tex[self.nquads]=tex
+                    if model is self.looking_at[0]:
+                        self.looking_at_quads.append(self.nquads)
+                    self.quad_brightness[self.nquads]=(brightness_cam,brightness_sun,1)
+                    self.quad_data.append((model,face_direction))
                     self.nquads+=1
-                    self.quad_tex.append(tex)
-
-                    user_data=(model,face_direction)
-                    self.quad_data.append(user_data)
-
-                    user_data=(model is self.looking_at[0],
-                        (brightness_cam,brightness_sun,1))
-                    self.quad_data_render.append(user_data)
-
 
         self.sync_data()
 
@@ -617,6 +628,7 @@ class App:
         self.renderer.close()
 
 if __name__=='__main__':
+    multiprocessing.freeze_support()
     app=App()
     for z in range(0,6):
         for x in range(0,6):
